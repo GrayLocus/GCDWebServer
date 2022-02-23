@@ -146,7 +146,7 @@ static void _ExecuteMainThreadRunLoopSources() {
 @end
 
 @implementation GCDWebServer {
-  dispatch_queue_t _syncQueue;
+  dispatch_queue_t _syncQueue; // Comment: 内部queue，用来保证对 _activeConnections 变量操作的同步
   dispatch_group_t _sourceGroup;
   NSMutableArray<GCDWebServerHandler*>* _handlers;
   NSInteger _activeConnections;  // Accessed through _syncQueue only
@@ -236,15 +236,20 @@ static void _ExecuteMainThreadRunLoopSources() {
   }
 #endif
 
+  // 当第一个 connection 
   if ([_delegate respondsToSelector:@selector(webServerDidConnect:)]) {
     [_delegate webServerDidConnect:self];
   }
 }
 
+// Comment: 初始化函数中调用，内部状态管理、定时器启动、外部连接状态管理、delegate 通知等
+// 1.为何 _activeConnections 要单独放在一个异步队列操作
+// 2.为何对定时器，连接状态_connected 的管理都放在主线程
 - (void)willStartConnection:(GCDWebServerConnection*)connection {
   dispatch_sync(_syncQueue, ^{
     GWS_DCHECK(self->_activeConnections >= 0);
     if (self->_activeConnections == 0) {
+      // Comment: 主线程中完成对定时器启动、连接状态管理
       dispatch_async(dispatch_get_main_queue(), ^{
         if (self->_disconnectTimer) {
           CFRunLoopTimerInvalidate(self->_disconnectTimer);
@@ -265,6 +270,7 @@ static void _ExecuteMainThreadRunLoopSources() {
 // Always called on main thread
 - (void)_endBackgroundTask {
   GWS_DCHECK([NSThread isMainThread]);
+  // Comment: 后台任务
   if (_backgroundTask != UIBackgroundTaskInvalid) {
     if (_suspendInBackground && ([[UIApplication sharedApplication] applicationState] == UIApplicationStateBackground) && _source4) {
       [self _stop];
@@ -293,10 +299,13 @@ static void _ExecuteMainThreadRunLoopSources() {
   }
 }
 
+// server 断开指定的连接
 - (void)didEndConnection:(GCDWebServerConnection*)connection {
   dispatch_sync(_syncQueue, ^{
     GWS_DCHECK(self->_activeConnections > 0);
     self->_activeConnections -= 1;
+    
+    // 如果活跃的连接数为 0，则启动延迟定时器
     if (self->_activeConnections == 0) {
       dispatch_async(dispatch_get_main_queue(), ^{
         if ((self->_disconnectDelay > 0.0) && (self->_source4 != NULL)) {
@@ -432,6 +441,7 @@ static inline NSString* _EncodeBase64(NSString* string) {
 #endif
 }
 
+// Comment:Core 创建监听套接字 socket
 - (int)_createListeningSocket:(BOOL)useIPv6
                  localAddress:(const void*)address
                        length:(socklen_t)length
@@ -448,6 +458,7 @@ static inline NSString* _EncodeBase64(NSString* string) {
         return listeningSocket;
       } else {
         if (error) {
+          // Comment: 创建通用错误 NSError 
           *error = GCDWebServerMakePosixError(errno);
         }
         GWS_LOG_ERROR(@"Failed starting %s listening socket: %s (%i)", useIPv6 ? "IPv6" : "IPv4", strerror(errno), errno);
@@ -472,7 +483,10 @@ static inline NSString* _EncodeBase64(NSString* string) {
 
 - (dispatch_source_t)_createDispatchSourceWithListeningSocket:(int)listeningSocket isIPv6:(BOOL)isIPv6 {
   dispatch_group_enter(_sourceGroup);
+  // Comment: DISPATCH_SOURCE_TYPE_READ 监听文件描述符 read 操作的一类 dispatch source
+  // 在创建的监听套接字上创建 source 监听
   dispatch_source_t source = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, listeningSocket, 0, dispatch_get_global_queue(_dispatchQueuePriority, 0));
+  // 为 source 设置取消处理 handler
   dispatch_source_set_cancel_handler(source, ^{
     @autoreleasepool {
       int result = close(listeningSocket);
@@ -484,6 +498,8 @@ static inline NSString* _EncodeBase64(NSString* string) {
     }
     dispatch_group_leave(self->_sourceGroup);
   });
+  // Comment: 为 source 指定 event handler，当指定的事件到来时，该 handler 被派发到指定的队列
+  // 这里的 source 是监听套接字上的可读事件，如果有事件到来，就异步处理该事件，接受连接，创建新的连接 socket
   dispatch_source_set_event_handler(source, ^{
     @autoreleasepool {
       struct sockaddr_storage remoteSockAddr;
@@ -505,6 +521,7 @@ static inline NSString* _EncodeBase64(NSString* string) {
         int noSigPipe = 1;
         setsockopt(socket, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, sizeof(noSigPipe));  // Make sure this socket cannot generate SIG_PIPE
 
+        // 将地址对 address-pair 信息封装为一个 connection 对象
         GCDWebServerConnection* connection = [(GCDWebServerConnection*)[self->_connectionClass alloc] initWithServer:self localAddress:localAddress remoteAddress:remoteAddress socket:socket];  // Connection will automatically retain itself while opened
         [connection self];  // Prevent compiler from complaining about unused variable / useless statement
       } else {
@@ -518,6 +535,7 @@ static inline NSString* _EncodeBase64(NSString* string) {
 - (BOOL)_start:(NSError**)error {
   GWS_DCHECK(_source4 == NULL);
 
+  // Comment:Core 获取 socket 配置信息：端口、是否绑定本地主机、最大连接数
   NSUInteger port = [(NSNumber*)_GetOption(_options, GCDWebServerOption_Port, @0) unsignedIntegerValue];
   BOOL bindToLocalhost = [(NSNumber*)_GetOption(_options, GCDWebServerOption_BindToLocalhost, @NO) boolValue];
   NSUInteger maxPendingConnections = [(NSNumber*)_GetOption(_options, GCDWebServerOption_MaxPendingConnections, @16) unsignedIntegerValue];
@@ -528,10 +546,13 @@ static inline NSString* _EncodeBase64(NSString* string) {
   addr4.sin_family = AF_INET;
   addr4.sin_port = htons(port);
   addr4.sin_addr.s_addr = bindToLocalhost ? htonl(INADDR_LOOPBACK) : htonl(INADDR_ANY);
+  
+  // Comment: 创建 IPv4 监听套接字
   int listeningSocket4 = [self _createListeningSocket:NO localAddress:&addr4 length:sizeof(addr4) maxPendingConnections:maxPendingConnections error:error];
   if (listeningSocket4 <= 0) {
     return NO;
   }
+  // Comment: 如果未指定 port，获取IPv4 监听套接字地址上自动分配的 port
   if (port == 0) {
     struct sockaddr_in addr;
     socklen_t addrlen = sizeof(addr);
@@ -542,12 +563,15 @@ static inline NSString* _EncodeBase64(NSString* string) {
     }
   }
 
+  // 初始化 IPv6 套接字地址
   struct sockaddr_in6 addr6;
   bzero(&addr6, sizeof(addr6));
   addr6.sin6_len = sizeof(addr6);
   addr6.sin6_family = AF_INET6;
   addr6.sin6_port = htons(port);
   addr6.sin6_addr = bindToLocalhost ? in6addr_loopback : in6addr_any;
+  
+  // Comment: 创建 IPv6 监听套接字
   int listeningSocket6 = [self _createListeningSocket:YES localAddress:&addr6 length:sizeof(addr6) maxPendingConnections:maxPendingConnections error:error];
   if (listeningSocket6 <= 0) {
     close(listeningSocket4);
@@ -576,6 +600,8 @@ static inline NSString* _EncodeBase64(NSString* string) {
   _disconnectDelay = [(NSNumber*)_GetOption(_options, GCDWebServerOption_ConnectedStateCoalescingInterval, @1.0) doubleValue];
   _dispatchQueuePriority = [(NSNumber*)_GetOption(_options, GCDWebServerOption_DispatchQueuePriority, @(DISPATCH_QUEUE_PRIORITY_DEFAULT)) longValue];
 
+  // Comment:Core _source4,
+  // dispatch 框架提供了一套接口，用于监控底层的系统对象活动：file descriptors, Mach ports, signals, VFS nodes，当此类对象活动发生时，会自动提交相应的 event handler 到指定的 dispatch queue
   _source4 = [self _createDispatchSourceWithListeningSocket:listeningSocket4 isIPv6:NO];
   _source6 = [self _createDispatchSourceWithListeningSocket:listeningSocket6 isIPv6:YES];
   _port = port;
@@ -584,6 +610,7 @@ static inline NSString* _EncodeBase64(NSString* string) {
   NSString* bonjourName = _GetOption(_options, GCDWebServerOption_BonjourName, nil);
   NSString* bonjourType = _GetOption(_options, GCDWebServerOption_BonjourType, @"_http._tcp");
   if (bonjourName) {
+    // Comment:Core 创建 NetService 对象
     _registrationService = CFNetServiceCreate(kCFAllocatorDefault, CFSTR("local."), (__bridge CFStringRef)bonjourType, (__bridge CFStringRef)(bonjourName.length ? bonjourName : _serverName), (SInt32)_port);
     if (_registrationService) {
       CFNetServiceClientContext context = {0, (__bridge void*)self, NULL, NULL, NULL};
@@ -651,6 +678,16 @@ static inline NSString* _EncodeBase64(NSString* string) {
     }
   }
 
+  // Comment:Core dispatch 相关的对象
+  // dispatch_object_s
+  // dispatch_queue_s
+  // dispatch_source_s
+  // dispatch_group_s
+  // dispatch_channel_s
+  // dispatch_mach_s
+  // dispatch_semaphore_s
+  // dispatch_data_s
+  // dispatch_io_s
   dispatch_resume(_source4);
   dispatch_resume(_source6);
   GWS_LOG_INFO(@"%@ started on port %i and reachable at %@", [self class], (int)_port, self.serverURL);

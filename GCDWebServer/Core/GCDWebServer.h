@@ -239,6 +239,7 @@ extern NSString* const GCDWebServerAuthenticationMethod_DigestAccess;
  *
  *  @warning These methods are always called on the main thread in a serialized way.
  */
+// Comment:Core WebServer delegate
 @protocol GCDWebServerDelegate <NSObject>
 @optional
 
@@ -306,6 +307,7 @@ extern NSString* const GCDWebServerAuthenticationMethod_DigestAccess;
  *
  *  See the README.md file for more information about the architecture of GCDWebServer.
  */
+// Comment:Core 在端口监听开启 http web 服务的 server
 @interface GCDWebServer : NSObject
 
 /**

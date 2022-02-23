@@ -43,6 +43,7 @@ NS_ASSUME_NONNULL_BEGIN
  *  @warning The GCDWebServerConnection retains the GCDWebServer until the
  *  connection is closed.
  */
+// Comment:Core server 连接封装对象，
 @interface GCDWebServerConnection : NSObject
 
 /**

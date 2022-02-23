@@ -364,6 +364,7 @@ NS_ASSUME_NONNULL_END
     _socket = socket;
     GWS_LOG_DEBUG(@"Did open connection on socket %i", _socket);
 
+    // server 连接状态管理、代理消息通知、定时器启动
     [_server willStartConnection:self];
 
     if (![self open]) {

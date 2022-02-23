@@ -36,6 +36,7 @@ NS_ASSUME_NONNULL_BEGIN
  *
  *  @warning These methods are always called on the main thread in a serialized way.
  */
+// Comment:Core Server 回调
 @protocol GCDWebDAVServerDelegate <GCDWebServerDelegate>
 @optional
 
@@ -78,6 +79,9 @@ NS_ASSUME_NONNULL_BEGIN
  *
  *  See the README.md file for more information about the features of GCDWebDAVServer.
  */
+// Comment:Core WebDAV 基于 Web 的分布式编写和版本控制，是 http 协议的扩展，有利于用户间协同编辑和管理存储在万维网服务器文档
+// Ref: http://www.webdav.org/
+
 @interface GCDWebDAVServer : GCDWebServer
 
 /**
